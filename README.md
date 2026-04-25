@@ -1,49 +1,94 @@
 # SOAPGateway
 
-这是一个基于 Spring Boot 的 SOAP 网关项目，适用于 **没有 WSDL 文件** 的场景，并实现以下能力：
-- 接收 SOAP 请求（`/ws`）
-- 使用 DOM 解析 XML
-- 立即回发固定 ACK SOAP 响应
-- 异步转发请求到下游 business service
-- 接收 business service 请求并同步转发到 external server
-- 将消息和处理状态持久化到数据库
+`SOAPGateway` 是一个基于 Spring Boot + Spring-WS 的 SOAP 网关项目，面向 **无 WSDL** 场景，使用 DOM 解析 XML，并提供两条转发链路：
 
-## 1. 运行环境
+- **链路 A（上游 -> 网关 -> 下游 business）**：立即 ACK，异步转发
+- **链路 B（business -> 网关 -> external）**：同步转发并透传返回
+- 消息处理日志持久化到数据库（可配置是否保存原始请求 XML）
 
-- JDK 21+
-- Gradle 8.x（或使用 IDE 内置 Gradle）
+## 1. 环境要求
 
-## 2. 启动项目
+- JDK 21（必须）
+- 已配置 `JAVA_HOME` 并可在终端执行 `java -version`
+- 使用项目内 Gradle Wrapper（已内置）
+
+## 2. 快速启动
+
+推荐使用 Wrapper（Windows）：
 
 ```bash
-gradle bootRun
+.\gradlew.bat bootRun
 ```
 
-## 3. 接收 SOAP 请求
+Linux/macOS：
 
-SOAP 入口由 Spring-WS 提供，路径为：
+```bash
+./gradlew bootRun
+```
 
-`http://localhost:8080/ws`
+常用命令：
 
-Endpoint 监听的 payload root：
-- namespace: `http://example.com/soap`
+```bash
+.\gradlew.bat clean build
+.\gradlew.bat test
+```
+
+## 3. 默认配置（`application.yml`）
+
+```yaml
+server:
+  port: 8080
+
+gateway:
+  storage:
+    persist-request-xml: true
+  downstream:
+    endpoint-url: http://localhost:8081/ws/business
+    soap-action:
+  external:
+    endpoint-url: http://localhost:8082/ws/external
+    soap-action:
+```
+
+说明：
+
+- `gateway.storage.persist-request-xml`：
+  - `true`：保存 `request_xml`
+  - `false`：不保存原始 XML（字段为 `null`）
+- `gateway.downstream.*`：链路 A 的目标服务（异步）
+- `gateway.external.*`：链路 B 的目标服务（同步）
+
+## 4. SOAP 入口与用法
+
+统一 SOAP 地址：
+
+- `http://localhost:8080/ws`
+
+命名空间：
+
+- `http://example.com/soap`
+
+### 4.1 链路 A：`processRequest`（立即 ACK + 异步下游转发）
+
+匹配条件：
+
 - localPart: `processRequest`
 
-示例 SOAP Request（发送到 `http://localhost:8080/ws`）：
+请求示例：
 
 ```xml
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns="http://example.com/soap">
-   <soapenv:Header/>
-   <soapenv:Body>
-      <ns:processRequest>
-         <ns:customerId>C10086</ns:customerId>
-         <ns:action>QUERY</ns:action>
-      </ns:processRequest>
-   </soapenv:Body>
+  <soapenv:Header/>
+  <soapenv:Body>
+    <ns:processRequest>
+      <ns:customerId>C10086</ns:customerId>
+      <ns:action>QUERY</ns:action>
+    </ns:processRequest>
+  </soapenv:Body>
 </soapenv:Envelope>
 ```
 
-系统会**立即返回 ACK SOAP Response**（示例）：
+ACK 响应示例：
 
 ```xml
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
@@ -59,28 +104,42 @@ Endpoint 监听的 payload root：
 </soapenv:Envelope>
 ```
 
-## 4. 下游转发配置
+处理行为：
 
-在 `application.yml` 中配置下游地址：
+1. 网关解析请求并立即返回 ACK  
+2. 后台异步调用 `gateway.downstream.endpoint-url`  
+3. 日志表更新为 `FORWARDED` 或 `FAILED`
 
-```yaml
-gateway:
-  storage:
-    persist-request-xml: true
-  downstream:
-    endpoint-url: http://localhost:8081/ws/business
-    soap-action:
-  external:
-    endpoint-url: http://localhost:8082/ws/external
-    soap-action:
+### 4.2 链路 B：`businessRelayRequest`（同步 external 转发）
+
+匹配条件：
+
+- localPart: `businessRelayRequest`
+
+请求示例：
+
+```xml
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns="http://example.com/soap">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <ns:businessRelayRequest>
+      <ns:customerId>B20001</ns:customerId>
+      <ns:action>SUBMIT</ns:action>
+    </ns:businessRelayRequest>
+  </soapenv:Body>
+</soapenv:Envelope>
 ```
 
-收到上游请求后，系统会在 ACK 返回后异步调用下游服务。
-收到 business service 的中继请求后，系统会同步转发到 external server，并将 external 返回值直接返回给调用方。
+处理行为：
 
-## 5. 数据库存储
+1. 网关接收并解析请求  
+2. 同步调用 `gateway.external.endpoint-url`  
+3. 将 external 返回的 payload 直接作为 SOAP 响应返回  
+4. 日志表更新状态
 
-默认使用 H2 文件库：
+## 5. 数据存储
+
+默认数据库：H2 文件库
 
 ```yaml
 spring:
@@ -88,20 +147,24 @@ spring:
     url: jdbc:h2:file:./data/soapgatewaydb
 ```
 
-表：`soap_message_log`
+核心表：`soap_message_log`
 
-主要字段：
-- `tracking_id`：每条消息唯一追踪号
-- `request_xml`：原始入站 SOAP payload（由 `gateway.storage.persist-request-xml` 控制是否保存）
-- `downstream_response_xml`：下游返回
+核心字段：
+
+- `tracking_id`：消息追踪号
+- `customer_id` / `action`：业务字段
+- `request_xml`：原始请求（受 `persist-request-xml` 控制）
+- `downstream_response_xml`：下游或 external 响应
 - `status`：`RECEIVED` / `FORWARDED` / `FAILED`
-- `error_message`：失败原因
+- `error_message`：失败信息
+- `created_at` / `processed_at`：处理时间
 
-## 6. 关键实现说明
+## 6. 当前代码结构（关键类）
 
-- `SoapDomEndpoint`：负责接收、DOM 解析、立即回 ACK。
-- `BusinessRelayEndpoint`：接收 business service 请求并转发 external。
-- `InboundSoapProcessingService`：异步入库并转发下游。
-- `BusinessRelayService`：同步转发 external 并记录结果。
-- `SoapClientService`：调用下游 SOAP 服务。
-- `XmlDomParser`：`Source`/`String` 与 DOM 互转、节点解析。
+- `SoapDomEndpoint`：`processRequest` 入口，ACK + 异步派发
+- `InboundSoapProcessingService`：异步下游转发 + 落库
+- `BusinessRelayEndpoint`：`businessRelayRequest` 入口
+- `BusinessRelayService`：同步 external 转发 + 落库
+- `SoapClientService`：通用 SOAP 调用客户端
+- `XmlDomParser`：DOM 解析与 Source/String 转换
+- `SoapMessageLog` / `SoapMessageLogRepository`：日志实体与仓储
