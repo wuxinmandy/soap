@@ -1,7 +1,6 @@
 package com.example.soap.service;
 
-import com.example.soap.entity.SoapMessageLog;
-import com.example.soap.repository.SoapMessageLogRepository;
+import com.example.soap.storage.SoapMessageLogStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -12,7 +11,7 @@ import java.util.UUID;
 public class BusinessRelayService {
 
     private final SoapClientService soapClientService;
-    private final SoapMessageLogRepository soapMessageLogRepository;
+    private final SoapMessageLogStore soapMessageLogStore;
 
     @Value("${gateway.external.endpoint-url}")
     private String externalEndpointUrl;
@@ -24,33 +23,27 @@ public class BusinessRelayService {
     private boolean persistRequestXml;
 
     public BusinessRelayService(SoapClientService soapClientService,
-                                SoapMessageLogRepository soapMessageLogRepository) {
+                                SoapMessageLogStore soapMessageLogStore) {
         this.soapClientService = soapClientService;
-        this.soapMessageLogRepository = soapMessageLogRepository;
+        this.soapMessageLogStore = soapMessageLogStore;
     }
 
     public String forwardToExternal(String requestXml, String customerId, String action) {
-        SoapMessageLog log = new SoapMessageLog();
-        log.setTrackingId(UUID.randomUUID().toString());
-        log.setRequestXml(persistRequestXml ? requestXml : null);
-        log.setCustomerId(customerId);
-        log.setAction(action == null || action.isBlank() ? "BUSINESS_RELAY" : action);
-        log.setStatus("RECEIVED");
-        log.setCreatedAt(LocalDateTime.now());
-        soapMessageLogRepository.save(log);
+        String trackingId = UUID.randomUUID().toString();
+        soapMessageLogStore.saveReceived(
+                trackingId,
+                persistRequestXml ? requestXml : null,
+                customerId,
+                action == null || action.isBlank() ? "BUSINESS_RELAY" : action,
+                LocalDateTime.now()
+        );
 
         try {
             String responseXml = soapClientService.send(externalEndpointUrl, externalSoapAction, requestXml);
-            log.setDownstreamResponseXml(responseXml);
-            log.setStatus("FORWARDED");
-            log.setProcessedAt(LocalDateTime.now());
-            soapMessageLogRepository.save(log);
+            soapMessageLogStore.markForwarded(trackingId, responseXml, LocalDateTime.now());
             return responseXml;
         } catch (Exception ex) {
-            log.setStatus("FAILED");
-            log.setErrorMessage(ex.getMessage());
-            log.setProcessedAt(LocalDateTime.now());
-            soapMessageLogRepository.save(log);
+            soapMessageLogStore.markFailed(trackingId, ex.getMessage(), LocalDateTime.now());
             throw new IllegalStateException("Failed to forward business service request to external server.", ex);
         }
     }

@@ -28,8 +28,19 @@ public class SoapDomEndpoint {
     public Source processRequest(@RequestPayload Source request) throws Exception {
         String requestXml = XmlDomParser.sourceToString(request);
         Document document = XmlDomParser.stringToDocument(requestXml);
-        String customerId = XmlDomParser.getTagValue(document, "customerId").orElse("UNKNOWN");
-        String action = XmlDomParser.getTagValue(document, "action").orElse("DEFAULT_ACTION");
+        String customerId = XmlDomParser.getTagValue(document, "customerId").orElse("");
+        String action = XmlDomParser.getTagValue(document, "action").orElse("");
+
+        if (customerId.isBlank() || action.isBlank()) {
+            String rejectedResponseXml = """
+                    <ns:processResponse xmlns:ns="http://example.com/soap">
+                        <ns:status>REJECTED</ns:status>
+                        <ns:message>Validation failed: customerId and action are required.</ns:message>
+                    </ns:processResponse>
+                    """;
+            return new StringSource(rejectedResponseXml);
+        }
+
         String trackingId = UUID.randomUUID().toString();
 
         inboundSoapProcessingService.process(

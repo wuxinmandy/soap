@@ -1,8 +1,7 @@
 package com.example.soap.service;
 
-import com.example.soap.entity.SoapMessageLog;
 import com.example.soap.model.InboundSoapRequest;
-import com.example.soap.repository.SoapMessageLogRepository;
+import com.example.soap.storage.SoapMessageLogStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -12,7 +11,7 @@ import java.time.LocalDateTime;
 @Service
 public class InboundSoapProcessingService {
 
-    private final SoapMessageLogRepository soapMessageLogRepository;
+    private final SoapMessageLogStore soapMessageLogStore;
     private final SoapClientService soapClientService;
 
     @Value("${gateway.downstream.endpoint-url}")
@@ -24,22 +23,21 @@ public class InboundSoapProcessingService {
     @Value("${gateway.storage.persist-request-xml:true}")
     private boolean persistRequestXml;
 
-    public InboundSoapProcessingService(SoapMessageLogRepository soapMessageLogRepository,
+    public InboundSoapProcessingService(SoapMessageLogStore soapMessageLogStore,
                                         SoapClientService soapClientService) {
-        this.soapMessageLogRepository = soapMessageLogRepository;
+        this.soapMessageLogStore = soapMessageLogStore;
         this.soapClientService = soapClientService;
     }
 
     @Async
     public void process(InboundSoapRequest inboundSoapRequest) {
-        SoapMessageLog log = new SoapMessageLog();
-        log.setTrackingId(inboundSoapRequest.trackingId());
-        log.setRequestXml(persistRequestXml ? inboundSoapRequest.requestXml() : null);
-        log.setCustomerId(inboundSoapRequest.customerId());
-        log.setAction(inboundSoapRequest.action());
-        log.setStatus("RECEIVED");
-        log.setCreatedAt(LocalDateTime.now());
-        soapMessageLogRepository.save(log);
+        soapMessageLogStore.saveReceived(
+                inboundSoapRequest.trackingId(),
+                persistRequestXml ? inboundSoapRequest.requestXml() : null,
+                inboundSoapRequest.customerId(),
+                inboundSoapRequest.action(),
+                LocalDateTime.now()
+        );
 
         try {
             String downstreamResponseXml = soapClientService.send(
@@ -47,15 +45,17 @@ public class InboundSoapProcessingService {
                     downstreamSoapAction,
                     inboundSoapRequest.requestXml()
             );
-            log.setDownstreamResponseXml(downstreamResponseXml);
-            log.setStatus("FORWARDED");
-            log.setProcessedAt(LocalDateTime.now());
-            soapMessageLogRepository.save(log);
+            soapMessageLogStore.markForwarded(
+                    inboundSoapRequest.trackingId(),
+                    downstreamResponseXml,
+                    LocalDateTime.now()
+            );
         } catch (Exception ex) {
-            log.setStatus("FAILED");
-            log.setErrorMessage(ex.getMessage());
-            log.setProcessedAt(LocalDateTime.now());
-            soapMessageLogRepository.save(log);
+            soapMessageLogStore.markFailed(
+                    inboundSoapRequest.trackingId(),
+                    ex.getMessage(),
+                    LocalDateTime.now()
+            );
         }
     }
 }

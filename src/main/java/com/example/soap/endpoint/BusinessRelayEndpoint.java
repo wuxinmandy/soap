@@ -27,8 +27,17 @@ public class BusinessRelayEndpoint {
         String requestXml = XmlDomParser.sourceToString(request);
         Document document = XmlDomParser.stringToDocument(requestXml);
 
-        String customerId = XmlDomParser.getTagValue(document, "customerId").orElse("UNKNOWN");
-        String action = XmlDomParser.getTagValue(document, "action").orElse("BUSINESS_RELAY");
+        String customerId = XmlDomParser.getTagValue(document, "customerId").orElse("");
+        String action = XmlDomParser.getTagValue(document, "action").orElse("");
+        if (customerId.isBlank() || action.isBlank()) {
+            String rejectedResponseXml = """
+                    <ns:businessRelayResponse xmlns:ns="http://example.com/soap">
+                        <ns:status>REJECTED</ns:status>
+                        <ns:message>Validation failed: customerId and action are required.</ns:message>
+                    </ns:businessRelayResponse>
+                    """;
+            return new StringSource(rejectedResponseXml);
+        }
 
         String externalResponseXml = businessRelayService.forwardToExternal(requestXml, customerId, action);
         return new StringSource(externalResponseXml);

@@ -4,7 +4,7 @@
 
 - **链路 A（上游 -> 网关 -> 下游 business）**：立即 ACK，异步转发
 - **链路 B（business -> 网关 -> external）**：同步转发并透传返回
-- 消息处理日志持久化到数据库（可配置是否保存原始请求 XML）
+- 消息处理日志可按配置落库或落文件（同时可配置是否保存原始请求 XML）
 
 ## 1. 环境要求
 
@@ -41,7 +41,10 @@ server:
 
 gateway:
   storage:
+    mode: db
     persist-request-xml: true
+    file:
+      path: ./data/soap-message-log.jsonl
   downstream:
     endpoint-url: http://localhost:8081/ws/business
     soap-action:
@@ -52,9 +55,12 @@ gateway:
 
 说明：
 
+- `gateway.storage.mode`：
+  - `db`：写入 `soap_message_log` 表（默认）
+  - `file`：按 JSON Lines 追加写入 `gateway.storage.file.path`
 - `gateway.storage.persist-request-xml`：
   - `true`：保存 `request_xml`
-  - `false`：不保存原始 XML（字段为 `null`）
+  - `false`：不保存原始 XML（db 中为 `null`，file 中为 `null`）
 - `gateway.downstream.*`：链路 A 的目标服务（异步）
 - `gateway.external.*`：链路 B 的目标服务（同步）
 
@@ -106,9 +112,11 @@ ACK 响应示例：
 
 处理行为：
 
-1. 网关解析请求并立即返回 ACK  
-2. 后台异步调用 `gateway.downstream.endpoint-url`  
-3. 日志表更新为 `FORWARDED` 或 `FAILED`
+1. 网关先做基础校验（`customerId`、`action` 不能为空）  
+2. 校验通过后立即返回 ACK（`ACCEPTED`）  
+3. 校验失败返回 `REJECTED`，不触发转发  
+4. 后台异步调用 `gateway.downstream.endpoint-url`  
+5. 日志记录更新为 `FORWARDED` 或 `FAILED`
 
 ### 4.2 链路 B：`businessRelayRequest`（同步 external 转发）
 
@@ -132,14 +140,18 @@ ACK 响应示例：
 
 处理行为：
 
-1. 网关接收并解析请求  
-2. 同步调用 `gateway.external.endpoint-url`  
-3. 将 external 返回的 payload 直接作为 SOAP 响应返回  
-4. 日志表更新状态
+1. 网关接收并解析请求，并校验 `customerId`、`action`  
+2. 校验失败直接返回 `REJECTED`  
+3. 校验通过后同步调用 `gateway.external.endpoint-url`  
+4. 将 external 返回的 payload 直接作为 SOAP 响应返回  
+5. 日志记录更新状态
 
 ## 5. 数据存储
 
-默认数据库：H2 文件库
+支持两种存储模式：
+
+- `db`：默认 H2 文件库（`soap_message_log`）
+- `file`：JSON Lines 文件（默认 `./data/soap-message-log.jsonl`）
 
 ```yaml
 spring:

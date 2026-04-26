@@ -16,7 +16,10 @@ server:
 
 gateway:
   storage:
+    mode: db
     persist-request-xml: true
+    file:
+      path: ./data/soap-message-log.jsonl
   downstream:
     endpoint-url: http://localhost:8081/ws/business
     soap-action:
